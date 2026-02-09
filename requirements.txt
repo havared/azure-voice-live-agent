@@ -1,0 +1,17 @@
+# Azure Voice Live SDK with aiohttp WebSocket transport
+azure-ai-voicelive[aiohttp]
+
+# Azure Identity for service principal (ClientSecretCredential) authentication
+azure-identity
+
+# Async web framework
+fastapi>=0.115.0
+
+# ASGI server with standard extras (websockets, uvloop, httptools)
+uvicorn[standard]>=0.32.0
+
+# Typed settings from environment variables
+pydantic-settings>=2.0.0
+
+# Load .env files
+python-dotenv>=1.0.0
