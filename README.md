@@ -9,7 +9,7 @@ A FastAPI WebSocket server that bridges browser or mobile clients to Azure Voice
 ## Code Structure
 
 ```
-telesales-code-samples/
+ubp-telesales-code-samples/
 ├── .env.example           # Environment variable template with documentation
 ├── .env                   # Your actual config (git-ignored)
 ├── .gitignore
@@ -29,7 +29,7 @@ All Python dependencies required by the project:
 | Package | Purpose |
 |---|---|
 | `azure-ai-voicelive[aiohttp]` | Voice Live SDK with async WebSocket transport |
-| `azure-identity` | Service principal authentication (`ClientSecretCredential`) |
+| `azure-identity` | API-key and service-principal credential helpers (no interactive login) |
 | `fastapi` | Async web framework with WebSocket support |
 | `uvicorn[standard]` | ASGI server (includes websockets, uvloop, httptools) |
 | `pydantic-settings` | Type-safe settings loaded from environment variables |
@@ -41,8 +41,8 @@ Centralised configuration using `pydantic-settings.BaseSettings`. Every value is
 
 | Group | Variables | Notes |
 |---|---|---|
-| **Voice Live** | `AZURE_VOICELIVE_ENDPOINT`, `PROJECT_NAME`, `AGENT_ID`, `API_VERSION`, `API_KEY` | Connection and API key for the Voice Live WebSocket |
-| **Service Principal** | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | Used to mint the Foundry agent access token (no `az login`) |
+| **Voice Live** | `AZURE_VOICELIVE_ENDPOINT`, `PROJECT_NAME`, `AGENT_ID`, `API_VERSION`, `API_KEY` | API key authenticates the Voice Live WebSocket connection |
+| **Agent Token** | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | Service principal credentials stored in `.env` -- used to programmatically mint the Foundry agent access token. **No `az login` or interactive auth required.** |
 | **Custom Voice** | `AZURE_VOICELIVE_VOICE_NAME`, `VOICE_ENDPOINT_ID` | Your custom neural voice name and deployment endpoint |
 | **VAD** | `VAD_THRESHOLD`, `VAD_PREFIX_PADDING_MS`, `VAD_SILENCE_DURATION_MS` | Voice activity detection tuning (sensible defaults provided) |
 | **Application** | `APP_HOST`, `APP_PORT`, `LOG_LEVEL`, `ENABLE_PROACTIVE_GREETING` | Server binding and behaviour |
@@ -51,7 +51,7 @@ Centralised configuration using `pydantic-settings.BaseSettings`. Every value is
 
 Contains `VoiceLiveSessionManager` -- the core class that manages a single voice session. One instance is created per client WebSocket connection. It is single-use and follows this lifecycle:
 
-1. **Acquire credentials** -- builds an `AzureKeyCredential` from the API key and mints a Foundry agent access token using the service principal.
+1. **Acquire credentials** -- builds an `AzureKeyCredential` from the API key (for the Voice Live connection) and uses the service principal credentials from `.env` to programmatically mint a Foundry agent access token via `ClientSecretCredential`. No interactive login or `az login` is involved.
 2. **Connect** -- opens an async WebSocket to Azure Voice Live, passing agent ID, project name, and access token as query parameters.
 3. **Configure session** -- sends a `session.update` event with the custom neural voice, PCM16 audio format, server VAD, echo cancellation, and deep noise suppression.
 4. **Relay loops** -- two concurrent `asyncio` tasks run until either side disconnects:
@@ -81,27 +81,40 @@ Excludes `.env`, `__pycache__`, logs, virtual environments, and IDE files from v
 
 ---
 
+## Authentication Model
+
+All credentials are read from `.env` at startup. There is **no `az login`, no interactive browser flow, and no CLI dependency**.
+
+| What | How | Source |
+|---|---|---|
+| **Voice Live WebSocket** | `AzureKeyCredential` (API key) | `AZURE_VOICELIVE_API_KEY` in `.env` |
+| **Foundry Agent access token** | `ClientSecretCredential` (service principal client-credentials flow) | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` in `.env` |
+
+The service principal token is minted programmatically on each session start. The API key and SP credentials are the only secrets required.
+
+---
+
 ## Code Setup
 
 ### Prerequisites
 
-- Python 3.11 (conda environment `telesales`)
+- Python 3.11 (conda environment `ubp-telesales`)
 - An Azure AI Foundry resource with:
-  - An API key (Keys & Endpoint section in the portal)
-  - A deployed Foundry Agent (created in the Agents playground)
-  - A custom neural voice deployed via the Custom Voice portal
-- A registered Entra ID application (service principal) with the **Cognitive Services User** role assigned on your Foundry resource
+  - An **API key** (Keys & Endpoint section in the portal)
+  - A deployed **Foundry Agent** (created in the Agents playground)
+  - A **custom neural voice** deployed via the Custom Voice portal
+- A registered **Entra ID application** (service principal) with the **Cognitive Services User** role assigned on your Foundry resource. You only need the `tenant_id`, `client_id`, and `client_secret` -- these go into `.env` and are used for automated token generation. **No `az login` or interactive authentication is needed.**
 
 ### 1. Clone and enter the project
 
 ```bash
-cd telesales-code-samples
+cd ubp-telesales-code-samples
 ```
 
 ### 2. Activate the conda environment
 
 ```bash
-conda activate telesales
+conda activate ubp-telesales
 ```
 
 ### 3. Install dependencies
@@ -118,16 +131,16 @@ Copy the example and fill in your values:
 cp .env.example .env
 ```
 
-Edit `.env` with your actual credentials:
+Edit `.env` with your actual credentials. All authentication is key / secret based -- no interactive login required:
 
 ```dotenv
-# Azure Voice Live
+# Azure Voice Live (API key authenticates the WebSocket connection)
 AZURE_VOICELIVE_ENDPOINT=https://your-resource.services.ai.azure.com
 AZURE_VOICELIVE_PROJECT_NAME=your-project-name
 AZURE_VOICELIVE_AGENT_ID=your-agent-id
-AZURE_VOICELIVE_API_KEY=your-api-key
+AZURE_VOICELIVE_API_KEY=your-api-key          # KEY1 or KEY2 from the portal
 
-# Service Principal (register in Entra ID, assign Cognitive Services User role)
+# Service Principal (auto-generates the agent access token at runtime)
 AZURE_TENANT_ID=your-tenant-id
 AZURE_CLIENT_ID=your-client-id
 AZURE_CLIENT_SECRET=your-client-secret
