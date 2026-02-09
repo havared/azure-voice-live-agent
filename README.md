@@ -9,7 +9,7 @@ A FastAPI WebSocket server that bridges browser or mobile clients to Azure Voice
 ## Code Structure
 
 ```
-ubp-telesales-code-samples/
+telesales-code-samples/
 ├── .env.example           # Environment variable template with documentation
 ├── .env                   # Your actual config (git-ignored)
 ├── .gitignore
@@ -85,7 +85,7 @@ Excludes `.env`, `__pycache__`, logs, virtual environments, and IDE files from v
 
 ### Prerequisites
 
-- Python 3.11 (conda environment `ubp-telesales`)
+- Python 3.11 (conda environment `telesales`)
 - An Azure AI Foundry resource with:
   - An API key (Keys & Endpoint section in the portal)
   - A deployed Foundry Agent (created in the Agents playground)
@@ -95,13 +95,13 @@ Excludes `.env`, `__pycache__`, logs, virtual environments, and IDE files from v
 ### 1. Clone and enter the project
 
 ```bash
-cd ubp-telesales-code-samples
+cd telesales-code-samples
 ```
 
 ### 2. Activate the conda environment
 
 ```bash
-conda activate ubp-telesales
+conda activate telesales
 ```
 
 ### 3. Install dependencies
