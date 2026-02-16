@@ -1,7 +1,7 @@
 """Voice Live session manager.
 
-Bridges a client WebSocket connection to Azure AI Voice Live for real-time
-speech-to-speech voice agent interactions.
+Bridges a client WebSocket connection to Azure OpenAI Realtime via Voice Live
+for real-time speech-to-speech voice interactions.
 
 WebSocket Protocol
 ==================
@@ -9,6 +9,7 @@ WebSocket Protocol
 Client -> Server
     Binary frame : Raw PCM16 24 kHz mono audio bytes
     Text frame   : JSON  {"type": "audio", "audio": "<base64 PCM16>"}
+                         {"type": "barge_in"}
 
 Server -> Client
     Binary frame : Raw PCM16 24 kHz mono audio bytes  (agent speech)
@@ -17,6 +18,7 @@ Server -> Client
         {"type": "user_transcript", "text": "..."}
         {"type": "agent_transcript", "text": "..."}
         {"type": "agent_text", "text": "..."}
+        {"type": "clear_playback"}
         {"type": "status", "status": "listening | processing | agent_speaking | ready"}
         {"type": "error", "message": "..."}
 """
@@ -27,13 +29,13 @@ import asyncio
 import base64
 import json
 import logging
+from pathlib import Path
 from typing import Any, Optional
 
 from azure.ai.voicelive.aio import VoiceLiveConnection, connect
 from azure.ai.voicelive.models import (
     AudioEchoCancellation,
     AudioNoiseReduction,
-    AzureCustomVoice,
     InputAudioFormat,
     Modality,
     OutputAudioFormat,
@@ -42,7 +44,6 @@ from azure.ai.voicelive.models import (
     ServerVad,
 )
 from azure.core.credentials import AzureKeyCredential
-from azure.identity.aio import ClientSecretCredential
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.config import Settings
@@ -66,6 +67,7 @@ class VoiceLiveSessionManager:
         self._active_response: bool = False
         self._response_api_done: bool = False
         self._conversation_started: bool = False
+        self._audio_suppressed: bool = False
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -74,22 +76,21 @@ class VoiceLiveSessionManager:
     async def run(self) -> None:
         """Open a Voice Live session and relay audio until disconnect."""
         try:
-            vl_credential, agent_token = await self._acquire_credentials()
+            credential = AzureKeyCredential(self._settings.azure_openai_key)
 
             async with connect(
-                endpoint=self._settings.azure_voicelive_endpoint,
-                credential=vl_credential,
+                endpoint=self._settings.azure_openai_endpoint,
+                credential=credential,
                 query={
-                    "agent-id": self._settings.azure_voicelive_agent_id,
-                    "agent-project-name": self._settings.azure_voicelive_project_name,
-                    "agent-access-token": agent_token,
+                    "deployment": self._settings.azure_openai_deployment,
+                    "api-version": self._settings.azure_api_version,
                 },
             ) as connection:
                 self._connection = connection
                 logger.info(
-                    "Connected to Voice Live | agent=%s project=%s",
-                    self._settings.azure_voicelive_agent_id,
-                    self._settings.azure_voicelive_project_name,
+                    "Connected to Voice Live | deployment=%s endpoint=%s",
+                    self._settings.azure_openai_deployment,
+                    self._settings.azure_openai_endpoint,
                 )
 
                 await self._configure_session()
@@ -104,46 +105,30 @@ class VoiceLiveSessionManager:
             self._connection = None
 
     # ------------------------------------------------------------------
-    # Credentials
-    # ------------------------------------------------------------------
-
-    async def _acquire_credentials(
-        self,
-    ) -> tuple[AzureKeyCredential, str]:
-        """Return ``(voicelive_credential, agent_access_token)``.
-
-        Uses API key for the Voice Live WebSocket connection and a service
-        principal (client credentials) to mint the Foundry agent access token.
-        All values come from .env -- no interactive ``az login`` required.
-        """
-        # 1. API key credential for the Voice Live connection
-        vl_credential = AzureKeyCredential(self._settings.azure_voicelive_api_key)
-        logger.info("Using API key credential for Voice Live connection")
-
-        # 2. Agent access token via service principal (client credentials flow)
-        sp_credential = ClientSecretCredential(
-            tenant_id=self._settings.azure_tenant_id,
-            client_id=self._settings.azure_client_id,
-            client_secret=self._settings.azure_client_secret,
-        )
-        try:
-            token = await sp_credential.get_token("https://ai.azure.com/.default")
-            agent_token = token.token
-            logger.info("Acquired agent access token via service principal")
-        finally:
-            await sp_credential.close()
-
-        return vl_credential, agent_token
-
-    # ------------------------------------------------------------------
     # Session configuration
     # ------------------------------------------------------------------
+
+    def _load_instructions(self) -> str:
+        """Load agent instructions from the configured markdown file."""
+        file_path = Path(self._settings.agent_instructions_file)
+        if not file_path.is_file():
+            logger.warning(
+                "Instructions file not found: %s — using empty instructions",
+                file_path,
+            )
+            return ""
+
+        text = file_path.read_text(encoding="utf-8").strip()
+        logger.info(
+            "Loaded agent instructions from %s (%d chars)", file_path, len(text)
+        )
+        return text
 
     async def _configure_session(self) -> None:
         """Send ``session.update`` with voice, VAD, echo-cancel & noise-reduce."""
         assert self._connection is not None
 
-        voice_config = self._build_voice_config()
+        instructions = self._load_instructions()
 
         turn_detection = ServerVad(
             threshold=self._settings.vad_threshold,
@@ -153,7 +138,8 @@ class VoiceLiveSessionManager:
 
         session_config = RequestSession(
             modalities=[Modality.TEXT, Modality.AUDIO],
-            voice=voice_config,
+            instructions=instructions,
+            voice=self._settings.voice_name,
             input_audio_format=InputAudioFormat.PCM16,
             output_audio_format=OutputAudioFormat.PCM16,
             turn_detection=turn_detection,
@@ -164,14 +150,7 @@ class VoiceLiveSessionManager:
         )
 
         await self._connection.session.update(session=session_config)
-        logger.info("Session configuration sent")
-
-    def _build_voice_config(self) -> AzureCustomVoice:
-        """Build the custom neural voice configuration from settings."""
-        return AzureCustomVoice(
-            name=self._settings.azure_voicelive_voice_name,
-            endpoint_id=self._settings.azure_voicelive_voice_endpoint_id,
-        )
+        logger.info("Session configuration sent (voice=%s)", self._settings.voice_name)
 
     # ------------------------------------------------------------------
     # Relay loops
@@ -191,12 +170,10 @@ class VoiceLiveSessionManager:
             done, pending = await asyncio.wait(
                 tasks, return_when=asyncio.FIRST_COMPLETED
             )
-            # Cancel the surviving task
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
 
-            # Re-raise real exceptions from completed tasks
             for task in done:
                 if not task.cancelled():
                     exc = task.exception()
@@ -245,6 +222,8 @@ class VoiceLiveSessionManager:
                         await self._connection.input_audio_buffer.append(
                             audio=audio_b64
                         )
+                elif msg_type == "barge_in":
+                    await self._handle_client_barge_in()
                 elif msg_type == "ping":
                     await self._send_json({"type": "pong"})
 
@@ -319,6 +298,8 @@ class VoiceLiveSessionManager:
             await self._send_json({"type": "status", "status": "listening"})
 
             if self._active_response and not self._response_api_done:
+                self._audio_suppressed = True
+                await self._send_json({"type": "clear_playback"})
                 try:
                     await self._connection.response.cancel()
                     logger.info("Cancelled active response (barge-in)")
@@ -338,9 +319,12 @@ class VoiceLiveSessionManager:
         elif event_type == ServerEventType.RESPONSE_CREATED:
             self._active_response = True
             self._response_api_done = False
+            self._audio_suppressed = False
             await self._send_json({"type": "status", "status": "agent_speaking"})
 
         elif event_type == ServerEventType.RESPONSE_AUDIO_DELTA:
+            if self._audio_suppressed:
+                return
             audio_data = event.delta
             if audio_data:
                 if isinstance(audio_data, bytes):
@@ -373,6 +357,32 @@ class VoiceLiveSessionManager:
 
         else:
             logger.debug("Unhandled event: %s", event_type)
+
+    # ------------------------------------------------------------------
+    # Barge-in
+    # ------------------------------------------------------------------
+
+    async def _handle_client_barge_in(self) -> None:
+        """Handle a barge-in signal sent by the client's local VAD.
+
+        Immediately suppresses audio forwarding and cancels the active
+        response so the agent stops speaking without waiting for Azure's
+        server-side VAD round-trip.
+        """
+        assert self._connection is not None
+        self._audio_suppressed = True
+        logger.info("Client barge-in received — audio suppressed")
+
+        if self._active_response and not self._response_api_done:
+            try:
+                await self._connection.response.cancel()
+                logger.info("Cancelled active response (client barge-in)")
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "no active response" in msg:
+                    logger.debug("Cancel ignored — already completed")
+                else:
+                    logger.warning("Cancel failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Helpers

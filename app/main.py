@@ -33,13 +33,9 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     logger.info("Voice Live API server starting")
-    logger.info("Endpoint : %s", settings.azure_voicelive_endpoint)
-    logger.info("Agent    : %s", settings.azure_voicelive_agent_id)
-    logger.info(
-        "Voice    : %s (custom, endpoint=%s)",
-        settings.azure_voicelive_voice_name,
-        settings.azure_voicelive_voice_endpoint_id,
-    )
+    logger.info("Endpoint   : %s", settings.azure_openai_endpoint)
+    logger.info("Deployment : %s", settings.azure_openai_deployment)
+    logger.info("Voice      : %s", settings.voice_name)
     yield
     logger.info("Voice Live API server shutting down")
 
@@ -48,8 +44,8 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="Voice Live API",
     description=(
-        "Real-time speech-to-speech voice agent powered by "
-        "Azure AI Voice Live and Foundry Agent Service"
+        "Real-time speech-to-speech voice API powered by "
+        "Azure AI Voice Live and Azure OpenAI Realtime"
     ),
     version="0.1.0",
     lifespan=lifespan,
@@ -183,6 +179,8 @@ _TEST_CLIENT_HTML = """\
 
 <script>
 let ws, audioCtx, playbackCtx, mediaStream, processor, nextPlayTime = 0;
+let activeSources = [], isAgentSpeaking = false, playbackMuted = false;
+const BARGE_IN_RMS_THRESHOLD = 0.015;
 
 function $(id) { return document.getElementById(id); }
 
@@ -214,7 +212,7 @@ function pcm16ToFloat32(pcm) {
 
 /* ── Playback scheduler ──────────────────────────────────────── */
 function playChunk(arrayBuffer) {
-  if (!playbackCtx) return;
+  if (!playbackCtx || playbackMuted) return;
   const pcm = new Int16Array(arrayBuffer);
   const f32 = pcm16ToFloat32(pcm);
   const buf = playbackCtx.createBuffer(1, f32.length, 24000);
@@ -226,6 +224,22 @@ function playChunk(arrayBuffer) {
   const t = Math.max(now + 0.02, nextPlayTime);
   src.start(t);
   nextPlayTime = t + buf.duration;
+
+  activeSources.push(src);
+  src.onended = () => {
+    const idx = activeSources.indexOf(src);
+    if (idx !== -1) activeSources.splice(idx, 1);
+  };
+}
+
+function flushPlayback() {
+  for (const src of activeSources) {
+    try { src.stop(); } catch(e) {}
+  }
+  activeSources = [];
+  nextPlayTime = 0;
+  isAgentSpeaking = false;
+  playbackMuted = true;
 }
 
 /* ── Session management ──────────────────────────────────────── */
@@ -252,8 +266,21 @@ async function startSession() {
       const source = audioCtx.createMediaStreamSource(mediaStream);
       processor = audioCtx.createScriptProcessor(4096, 1, 1);
       processor.onaudioprocess = e => {
+        const inputData = e.inputBuffer.getChannelData(0);
         if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(float32ToPcm16(e.inputBuffer.getChannelData(0)).buffer);
+          ws.send(float32ToPcm16(inputData).buffer);
+        }
+
+        if (isAgentSpeaking) {
+          let sumSq = 0;
+          for (let i = 0; i < inputData.length; i++) sumSq += inputData[i] * inputData[i];
+          const rms = Math.sqrt(sumSq / inputData.length);
+          if (rms > BARGE_IN_RMS_THRESHOLD) {
+            flushPlayback();
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'barge_in' }));
+            }
+          }
         }
       };
       source.connect(processor);
@@ -272,12 +299,17 @@ async function startSession() {
       const m = JSON.parse(event.data);
       if (m.type === 'session_started')
         addMsg('Session ' + m.session_id, 'status');
+      else if (m.type === 'clear_playback')
+        flushPlayback();
       else if (m.type === 'user_transcript')
         addMsg(m.text, 'user');
       else if (m.type === 'agent_transcript' || m.type === 'agent_text')
         addMsg(m.text, 'agent');
-      else if (m.type === 'status')
+      else if (m.type === 'status') {
+        if (m.status === 'agent_speaking') { isAgentSpeaking = true; playbackMuted = false; }
+        else if (m.status === 'listening' || m.status === 'ready') isAgentSpeaking = false;
         setStatus('Status: ' + m.status);
+      }
       else if (m.type === 'error')
         addMsg('Error: ' + m.message, 'status');
     }
@@ -288,6 +320,7 @@ async function startSession() {
 }
 
 function cleanup() {
+  flushPlayback();
   if (processor) { processor.disconnect(); processor = null; }
   if (audioCtx)  { audioCtx.close(); audioCtx = null; }
   if (playbackCtx) { playbackCtx.close(); playbackCtx = null; }

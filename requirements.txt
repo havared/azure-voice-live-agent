@@ -1,9 +1,6 @@
 # Azure Voice Live SDK with aiohttp WebSocket transport
 azure-ai-voicelive[aiohttp]
 
-# Azure Identity for service principal (ClientSecretCredential) authentication
-azure-identity
-
 # Async web framework
 fastapi>=0.115.0
 

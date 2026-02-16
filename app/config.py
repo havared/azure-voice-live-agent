@@ -18,26 +18,22 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # ── Azure Voice Live ────────────────────────────────────────────
-    azure_voicelive_endpoint: str
-    azure_voicelive_project_name: str
-    azure_voicelive_agent_id: str
-    azure_voicelive_api_version: str = "2025-10-01"
-    azure_voicelive_api_key: str
+    # ── Azure OpenAI Realtime ────────────────────────────────────────
+    azure_openai_endpoint: str
+    azure_openai_key: str
+    azure_openai_deployment: str = "gpt-realtime"
+    azure_api_version: str = "2025-10-01"
 
-    # ── Service Principal (for agent access token, no az login) ─────
-    azure_tenant_id: str
-    azure_client_id: str
-    azure_client_secret: str
-
-    # ── Custom Voice ────────────────────────────────────────────────
-    azure_voicelive_voice_name: str
-    azure_voicelive_voice_endpoint_id: str
+    # ── Voice ────────────────────────────────────────────────────────
+    voice_name: str = "alloy"
 
     # ── VAD ─────────────────────────────────────────────────────────
     vad_threshold: float = 0.5
     vad_prefix_padding_ms: int = 300
     vad_silence_duration_ms: int = 500
+
+    # ── Agent Instructions ───────────────────────────────────────────
+    agent_instructions_file: str = "agent_instructions.md"
 
     # ── Application ─────────────────────────────────────────────────
     app_host: str = "0.0.0.0"

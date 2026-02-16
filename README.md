@@ -1,8 +1,8 @@
 # Voice Live API
 
-Real-time speech-to-speech voice agent backend powered by [Azure AI Voice Live](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live-how-to) and [Microsoft Foundry Agent Service](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live-agents-quickstart).
+Real-time speech-to-speech voice backend powered by [Azure AI Voice Live](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live-how-to) and [Azure OpenAI Realtime](https://learn.microsoft.com/en-us/azure/ai-services/openai/realtime-audio-quickstart).
 
-A FastAPI WebSocket server that bridges browser or mobile clients to Azure Voice Live, enabling real-time conversations with an AI agent using a custom neural voice.
+A FastAPI WebSocket server that bridges browser or mobile clients to Azure Voice Live, enabling real-time conversations using an Azure OpenAI Realtime model with a standard voice.
 
 ---
 
@@ -13,6 +13,7 @@ ubp-telesales-code-samples/
 ├── .env.example           # Environment variable template with documentation
 ├── .env                   # Your actual config (git-ignored)
 ├── .gitignore
+├── agent_instructions.md  # Agent system prompt / behaviour instructions
 ├── requirements.txt       # Python dependencies
 ├── README.md
 └── app/
@@ -29,7 +30,6 @@ All Python dependencies required by the project:
 | Package | Purpose |
 |---|---|
 | `azure-ai-voicelive[aiohttp]` | Voice Live SDK with async WebSocket transport |
-| `azure-identity` | API-key and service-principal credential helpers (no interactive login) |
 | `fastapi` | Async web framework with WebSocket support |
 | `uvicorn[standard]` | ASGI server (includes websockets, uvloop, httptools) |
 | `pydantic-settings` | Type-safe settings loaded from environment variables |
@@ -41,23 +41,26 @@ Centralised configuration using `pydantic-settings.BaseSettings`. Every value is
 
 | Group | Variables | Notes |
 |---|---|---|
-| **Voice Live** | `AZURE_VOICELIVE_ENDPOINT`, `PROJECT_NAME`, `AGENT_ID`, `API_VERSION`, `API_KEY` | API key authenticates the Voice Live WebSocket connection |
-| **Agent Token** | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | Service principal credentials stored in `.env` -- used to programmatically mint the Foundry agent access token. **No `az login` or interactive auth required.** |
-| **Custom Voice** | `AZURE_VOICELIVE_VOICE_NAME`, `VOICE_ENDPOINT_ID` | Your custom neural voice name and deployment endpoint |
+| **Azure OpenAI** | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_KEY`, `AZURE_OPENAI_DEPLOYMENT`, `AZURE_API_VERSION` | API key authenticates the Voice Live WebSocket connection |
+| **Voice** | `VOICE_NAME` | Standard voice name (default: `alloy`) |
 | **VAD** | `VAD_THRESHOLD`, `VAD_PREFIX_PADDING_MS`, `VAD_SILENCE_DURATION_MS` | Voice activity detection tuning (sensible defaults provided) |
+| **Agent** | `AGENT_INSTRUCTIONS_FILE` | Path to the markdown file containing the agent system prompt (default: `agent_instructions.md`) |
 | **Application** | `APP_HOST`, `APP_PORT`, `LOG_LEVEL`, `ENABLE_PROACTIVE_GREETING` | Server binding and behaviour |
+
+### `agent_instructions.md`
+
+The agent's system prompt written in plain markdown. This file is read at the start of each voice session and sent as the `instructions` field in the `session.update` event to Azure OpenAI Realtime. To change how the agent behaves, edit this file — no code changes required.
 
 ### `app/service.py`
 
 Contains `VoiceLiveSessionManager` -- the core class that manages a single voice session. One instance is created per client WebSocket connection. It is single-use and follows this lifecycle:
 
-1. **Acquire credentials** -- builds an `AzureKeyCredential` from the API key (for the Voice Live connection) and uses the service principal credentials from `.env` to programmatically mint a Foundry agent access token via `ClientSecretCredential`. No interactive login or `az login` is involved.
-2. **Connect** -- opens an async WebSocket to Azure Voice Live, passing agent ID, project name, and access token as query parameters.
-3. **Configure session** -- sends a `session.update` event with the custom neural voice, PCM16 audio format, server VAD, echo cancellation, and deep noise suppression.
-4. **Relay loops** -- two concurrent `asyncio` tasks run until either side disconnects:
+1. **Connect** -- opens an async WebSocket to Azure Voice Live, passing the deployment name as a query parameter and authenticating with an API key.
+2. **Configure session** -- sends a `session.update` event with the voice name, PCM16 audio format, server VAD, echo cancellation, and deep noise suppression.
+3. **Relay loops** -- two concurrent `asyncio` tasks run until either side disconnects:
    - `client -> Voice Live`: reads binary/text frames from the client WebSocket, base64-encodes audio, and appends to the Voice Live input buffer.
    - `Voice Live -> client`: iterates server events, routes each to the appropriate handler, and forwards audio deltas (binary) and control messages (JSON) back to the client.
-5. **Event handling** -- processes session lifecycle, user/agent transcripts, barge-in (cancels active responses when the user interrupts), and errors.
+4. **Event handling** -- processes session lifecycle, user/agent transcripts, barge-in (cancels active responses when the user interrupts), and errors.
 
 ### `app/main.py`
 
@@ -67,7 +70,7 @@ FastAPI application with three endpoints:
 |---|---|---|
 | `GET` | `/health` | Liveness / readiness probe. Returns `{"status": "healthy"}`. |
 | `WebSocket` | `/ws/voice` | Real-time voice session. Accepts a WebSocket, creates a `VoiceLiveSessionManager`, and runs it for the duration of the connection. |
-| `GET` | `/` | Serves an embedded browser test client (HTML + JS) for development. Captures microphone audio, streams it over the WebSocket, and plays back the agent's response. |
+| `GET` | `/` | Serves an embedded browser test client (HTML + JS) for development. Captures microphone audio, streams it over the WebSocket, and plays back the response. |
 
 The file also configures structured logging and a lifespan handler that logs startup configuration.
 
@@ -87,10 +90,9 @@ All credentials are read from `.env` at startup. There is **no `az login`, no in
 
 | What | How | Source |
 |---|---|---|
-| **Voice Live WebSocket** | `AzureKeyCredential` (API key) | `AZURE_VOICELIVE_API_KEY` in `.env` |
-| **Foundry Agent access token** | `ClientSecretCredential` (service principal client-credentials flow) | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` in `.env` |
+| **Voice Live WebSocket** | `AzureKeyCredential` (API key) | `AZURE_OPENAI_KEY` in `.env` |
 
-The service principal token is minted programmatically on each session start. The API key and SP credentials are the only secrets required.
+The API key is the only secret required.
 
 ---
 
@@ -99,11 +101,9 @@ The service principal token is minted programmatically on each session start. Th
 ### Prerequisites
 
 - Python 3.11 (conda environment `ubp-telesales`)
-- An Azure AI Foundry resource with:
+- An Azure AI resource with:
   - An **API key** (Keys & Endpoint section in the portal)
-  - A deployed **Foundry Agent** (created in the Agents playground)
-  - A **custom neural voice** deployed via the Custom Voice portal
-- A registered **Entra ID application** (service principal) with the **Cognitive Services User** role assigned on your Foundry resource. You only need the `tenant_id`, `client_id`, and `client_secret` -- these go into `.env` and are used for automated token generation. **No `az login` or interactive authentication is needed.**
+  - A deployed **Azure OpenAI Realtime** model (e.g. `gpt-realtime`)
 
 ### 1. Clone and enter the project
 
@@ -131,23 +131,17 @@ Copy the example and fill in your values:
 cp .env.example .env
 ```
 
-Edit `.env` with your actual credentials. All authentication is key / secret based -- no interactive login required:
+Edit `.env` with your actual credentials:
 
 ```dotenv
-# Azure Voice Live (API key authenticates the WebSocket connection)
-AZURE_VOICELIVE_ENDPOINT=https://your-resource.services.ai.azure.com
-AZURE_VOICELIVE_PROJECT_NAME=your-project-name
-AZURE_VOICELIVE_AGENT_ID=your-agent-id
-AZURE_VOICELIVE_API_KEY=your-api-key          # KEY1 or KEY2 from the portal
+# Azure OpenAI Realtime (API key authenticates the WebSocket connection)
+AZURE_OPENAI_ENDPOINT=wss://your-resource.services.ai.azure.com
+AZURE_OPENAI_KEY=your-api-key
+AZURE_OPENAI_DEPLOYMENT=gpt-realtime
+AZURE_API_VERSION=2025-10-01
 
-# Service Principal (auto-generates the agent access token at runtime)
-AZURE_TENANT_ID=your-tenant-id
-AZURE_CLIENT_ID=your-client-id
-AZURE_CLIENT_SECRET=your-client-secret
-
-# Custom Neural Voice
-AZURE_VOICELIVE_VOICE_NAME=en-US-YourBrandNeural
-AZURE_VOICELIVE_VOICE_ENDPOINT_ID=your-endpoint-guid
+# Voice (standard OpenAI voice)
+VOICE_NAME=alloy
 ```
 
 ### 5. Run the server
@@ -166,7 +160,7 @@ The server starts on `http://0.0.0.0:8000` by default (configurable via `APP_HOS
 | API docs | `http://localhost:8000/docs` |
 | Browser test client | `http://localhost:8000/` |
 
-Open the browser test client, click **Start Session**, allow microphone access, and speak. The agent will respond through your speakers. The conversation transcript appears in real time.
+Open the browser test client, click **Start Session**, allow microphone access, and speak. The model will respond through your speakers. The conversation transcript appears in real time.
 
 ---
 
@@ -184,7 +178,7 @@ Open the browser test client, click **Start Session**, allow microphone access, 
 
 | Frame type | Content |
 |---|---|
-| Binary | Raw PCM16 24 kHz mono audio bytes (agent voice) |
+| Binary | Raw PCM16 24 kHz mono audio bytes (model voice) |
 | Text (JSON) | `{"type": "session_started", "session_id": "..."}` |
 | Text (JSON) | `{"type": "user_transcript", "text": "..."}` |
 | Text (JSON) | `{"type": "agent_transcript", "text": "..."}` |
@@ -197,6 +191,6 @@ Open the browser test client, click **Start Session**, allow microphone access, 
 
 ## References
 
-- [Voice Live Agents Quickstart (Python)](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live-agents-quickstart?tabs=macos%2Capi-key&pivots=programming-language-python)
+- [Voice Live Quickstart (Python)](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live-agents-quickstart?tabs=macos%2Capi-key&pivots=programming-language-python)
 - [How to use the Voice Live API](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live-how-to)
-- [How to customize Voice Live input and output](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live-how-to-customize)
+- [Azure OpenAI Realtime Audio Quickstart](https://learn.microsoft.com/en-us/azure/ai-services/openai/realtime-audio-quickstart)
