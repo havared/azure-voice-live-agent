@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign In — UBP Telesales Agent</title>
+    <meta name="description" content="Sign in to access the UBP Telesales Agent" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/styles.css" />
+</head>
+
+<body>
+    <div class="login-layout">
+
+        <!-- Login Card -->
+        <div class="login-card">
+            <div class="login-header">
+                <div class="login-logo">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                        <line x1="12" x2="12" y1="19" y2="22" />
+                    </svg>
+                </div>
+                <h1 class="login-title">UBP Telesales Agent</h1>
+                <p class="login-subtitle">Sign in</p>
+            </div>
+
+            <hr class="separator" />
+
+            <form id="loginForm" class="login-form" onsubmit="handleLogin(event)">
+                <div class="form-group">
+                    <label class="form-label" for="username">Username</label>
+                    <input id="username" name="username" type="text" class="form-input"
+                        placeholder="Enter your username" autocomplete="username" required autofocus />
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="password">Password</label>
+                    <input id="password" name="password" type="password" class="form-input"
+                        placeholder="Enter your password" autocomplete="current-password" required />
+                </div>
+
+                <div id="loginError" class="form-error" style="display: none;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="12" x2="12" y1="8" y2="12" />
+                        <line x1="12" x2="12.01" y1="16" y2="16" />
+                    </svg>
+                    <span id="loginErrorText">Invalid username or password</span>
+                </div>
+
+                <button type="submit" id="loginBtn" class="btn btn-primary login-btn">
+                    <span id="loginBtnText">Sign In</span>
+                    <div id="loginSpinner" class="spinner" style="display: none;"></div>
+                </button>
+            </form>
+
+            <div class="login-footer">
+                <p>Powered by Union Bank Philippines</p>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        async function handleLogin(e) {
+            e.preventDefault();
+
+            const btn = document.getElementById('loginBtn');
+            const btnText = document.getElementById('loginBtnText');
+            const spinner = document.getElementById('loginSpinner');
+            const errorEl = document.getElementById('loginError');
+
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            // Disable and show spinner
+            btn.disabled = true;
+            btnText.textContent = 'Signing in…';
+            spinner.style.display = '';
+            errorEl.style.display = 'none';
+
+            try {
+                const res = await fetch('/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password }),
+                });
+
+                if (res.ok) {
+                    window.location.href = '/';
+                } else {
+                    const data = await res.json().catch(() => ({}));
+                    document.getElementById('loginErrorText').textContent =
+                        data.detail || 'Invalid username or password';
+                    errorEl.style.display = '';
+                    // Shake animation
+                    errorEl.style.animation = 'none';
+                    errorEl.offsetHeight; // trigger reflow
+                    errorEl.style.animation = 'shake 0.4s ease';
+                }
+            } catch (err) {
+                document.getElementById('loginErrorText').textContent = 'Connection error. Please try again.';
+                errorEl.style.display = '';
+            } finally {
+                btn.disabled = false;
+                btnText.textContent = 'Sign In';
+                spinner.style.display = 'none';
+            }
+        }
+
+        // If already authenticated, redirect
+        fetch('/auth/check').then(r => {
+            if (r.ok) window.location.href = '/';
+        }).catch(() => { });
+    </script>
+</body>
+
+</html>

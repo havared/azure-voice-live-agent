@@ -55,3 +55,4 @@ class Settings(BaseSettings):
     app_port: int = 8000
     log_level: str = "INFO"
     enable_proactive_greeting: bool = True
+    admin_password: str = "admin"
