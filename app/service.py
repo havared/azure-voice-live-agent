@@ -31,17 +31,22 @@ import json
 import logging
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 from azure.ai.voicelive.aio import VoiceLiveConnection, connect
 from azure.ai.voicelive.models import (
     AudioEchoCancellation,
+    AudioInputTranscriptionOptions,
     AudioNoiseReduction,
+    AzureSemanticDetectionEn,
+    AzureSemanticVadEn,
+    AzureStandardVoice,
+    EouThresholdLevel,
     InputAudioFormat,
     Modality,
     OutputAudioFormat,
     RequestSession,
     ServerEventType,
-    ServerVad,
 )
 from azure.core.credentials import AzureKeyCredential
 from fastapi import WebSocket, WebSocketDisconnect
@@ -78,20 +83,24 @@ class VoiceLiveSessionManager:
         try:
             credential = AzureKeyCredential(self._settings.azure_openai_key)
 
+            query_params = urlencode({
+                "api-version": self._settings.azure_api_version,
+                "model": self._settings.azure_model,
+            })
+            ws_url = (
+                f"{self._settings.azure_openai_endpoint.rstrip('/')}"
+                f"/voice-live/realtime?{query_params}"
+            )
+            logger.info("Connecting to Voice Live | url=%s", ws_url)
+
             async with connect(
                 endpoint=self._settings.azure_openai_endpoint,
                 credential=credential,
-                query={
-                    "deployment": self._settings.azure_openai_deployment,
-                    "api-version": self._settings.azure_api_version,
-                },
+                model=self._settings.azure_model,
+                api_version=self._settings.azure_api_version,
             ) as connection:
                 self._connection = connection
-                logger.info(
-                    "Connected to Voice Live | deployment=%s endpoint=%s",
-                    self._settings.azure_openai_deployment,
-                    self._settings.azure_openai_endpoint,
-                )
+                logger.info("Voice Live connection established")
 
                 await self._configure_session()
                 await self._run_relay_loops()
@@ -125,24 +134,44 @@ class VoiceLiveSessionManager:
         return text
 
     async def _configure_session(self) -> None:
-        """Send ``session.update`` with voice, VAD, echo-cancel & noise-reduce."""
+        """Send ``session.update`` with Azure TTS voice, semantic VAD, echo-cancel & noise-reduce."""
         assert self._connection is not None
 
         instructions = self._load_instructions()
 
-        turn_detection = ServerVad(
+        eou_detection = None
+        if self._settings.eou_enabled:
+            eou_detection = AzureSemanticDetectionEn(
+                threshold_level=EouThresholdLevel(self._settings.eou_threshold_level),
+                timeout_ms=self._settings.eou_timeout_ms,
+            )
+
+        turn_detection = AzureSemanticVadEn(
             threshold=self._settings.vad_threshold,
             prefix_padding_ms=self._settings.vad_prefix_padding_ms,
             silence_duration_ms=self._settings.vad_silence_duration_ms,
+            remove_filler_words=self._settings.remove_filler_words,
+            end_of_utterance_detection=eou_detection,
+        )
+
+        voice = AzureStandardVoice(
+            name=self._settings.voice_name,
+            temperature=self._settings.voice_temperature,
+        )
+
+        input_transcription = AudioInputTranscriptionOptions(
+            model=self._settings.input_audio_transcription_model,
+            language=self._settings.input_audio_transcription_language,
         )
 
         session_config = RequestSession(
             modalities=[Modality.TEXT, Modality.AUDIO],
             instructions=instructions,
-            voice=self._settings.voice_name,
+            voice=voice,
             input_audio_format=InputAudioFormat.PCM16,
             output_audio_format=OutputAudioFormat.PCM16,
             turn_detection=turn_detection,
+            input_audio_transcription=input_transcription,
             input_audio_echo_cancellation=AudioEchoCancellation(),
             input_audio_noise_reduction=AudioNoiseReduction(
                 type="azure_deep_noise_suppression"
@@ -276,9 +305,17 @@ class VoiceLiveSessionManager:
             event_type
             == ServerEventType.CONVERSATION_ITEM_INPUT_AUDIO_TRANSCRIPTION_COMPLETED
         ):
-            transcript = event.get("transcript", "")
+            transcript = getattr(event, "transcript", "") or event.get("transcript", "")
             logger.info("User: %s", transcript)
-            await self._send_json({"type": "user_transcript", "text": transcript})
+            if transcript:
+                await self._send_json({"type": "user_transcript", "text": transcript})
+
+        elif (
+            event_type
+            == ServerEventType.CONVERSATION_ITEM_INPUT_AUDIO_TRANSCRIPTION_FAILED
+        ):
+            error_msg = getattr(event.error, "message", str(event)) if hasattr(event, "error") else str(event)
+            logger.warning("User transcription failed: %s", error_msg)
 
         # ── Agent text response ──────────────────────────────────────
         elif event_type == ServerEventType.RESPONSE_TEXT_DONE:

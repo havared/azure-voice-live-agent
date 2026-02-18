@@ -34,8 +34,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(_app: FastAPI):
     logger.info("Voice Live API server starting")
     logger.info("Endpoint   : %s", settings.azure_openai_endpoint)
-    logger.info("Deployment : %s", settings.azure_openai_deployment)
-    logger.info("Voice      : %s", settings.voice_name)
+    logger.info("Model      : %s", settings.azure_model)
+    logger.info("Voice      : %s (temperature=%.1f)", settings.voice_name, settings.voice_temperature)
+    logger.info("VAD        : azure_semantic_vad_en (eou_timeout=%dms)", settings.eou_timeout_ms)
     yield
     logger.info("Voice Live API server shutting down")
 
