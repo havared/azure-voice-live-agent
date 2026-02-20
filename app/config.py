@@ -28,11 +28,15 @@ class Settings(BaseSettings):
     voice_name: str = "en-US-AvaNeural"
     voice_temperature: float = 0.8
 
+    # ── Interruption Handling ───────────────────────────────────────
+    interrupt_response: bool = True
+    auto_truncate: bool = True
+
     # ── Azure Semantic VAD ───────────────────────────────────────────
     vad_threshold: float = 0.3
     vad_prefix_padding_ms: int = 200
-    vad_silence_duration_ms: int = 200
-    remove_filler_words: bool = False
+    vad_silence_duration_ms: int = 500
+    remove_filler_words: bool = True
 
     # ── End-of-Utterance Detection ───────────────────────────────────
     # Only supported with cascaded (non-realtime) models like gpt-4o.

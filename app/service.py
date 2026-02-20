@@ -152,6 +152,8 @@ class VoiceLiveSessionManager:
             silence_duration_ms=self._settings.vad_silence_duration_ms,
             remove_filler_words=self._settings.remove_filler_words,
             end_of_utterance_detection=eou_detection,
+            interrupt_response=self._settings.interrupt_response,
+            auto_truncate=self._settings.auto_truncate,
         )
 
         voice = AzureStandardVoice(
@@ -332,18 +334,21 @@ class VoiceLiveSessionManager:
         # ── User started speaking (potential barge-in) ───────────────
         elif event_type == ServerEventType.INPUT_AUDIO_BUFFER_SPEECH_STARTED:
             logger.info("Speech started")
+
+            # Immediately suppress outbound audio and tell the client to flush
+            self._audio_suppressed = True
+            await self._send_json({"type": "clear_playback"})
             await self._send_json({"type": "status", "status": "listening"})
 
             if self._active_response and not self._response_api_done:
-                self._audio_suppressed = True
-                await self._send_json({"type": "clear_playback"})
+                # Explicitly cancel the active response to stop audio deltas
                 try:
                     await self._connection.response.cancel()
-                    logger.info("Cancelled active response (barge-in)")
+                    logger.info("Barge-in: cancelled active response")
                 except Exception as exc:
                     msg = str(exc).lower()
                     if "no active response" in msg:
-                        logger.debug("Cancel ignored - already completed")
+                        logger.debug("Cancel ignored — already completed")
                     else:
                         logger.warning("Cancel failed: %s", exc)
 

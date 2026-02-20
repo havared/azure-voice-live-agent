@@ -24,7 +24,6 @@ let recordedUserChunks = [];
 let recordedAgentChunks = [];
 let recordingBlobUrl = null;
 
-const BARGE_IN_RMS_THRESHOLD = 0.015;
 const AUDIO_BAR_COUNT = 5;
 
 // ── DOM Helpers ─────────────────────────────────────────────────────
@@ -235,13 +234,20 @@ function playChunk(arrayBuffer) {
 }
 
 function flushPlayback() {
+    // Stop all individually tracked sources
     for (const src of activeSources) {
-        try { src.stop(); } catch (e) { /* ignore */ }
+        try { src.disconnect(); src.stop(); } catch (e) { /* ignore */ }
     }
     activeSources = [];
     nextPlayTime = 0;
     isAgentSpeaking = false;
     playbackMuted = true;
+
+    // Destroy and recreate the AudioContext to nuke any queued/scheduled audio
+    if (playbackCtx) {
+        try { playbackCtx.close(); } catch (e) { /* ignore */ }
+        playbackCtx = new AudioContext({ sampleRate: 24000 });
+    }
 }
 
 // ── Session Management ─────────────────────────────────────────────
@@ -300,15 +306,6 @@ async function startSession() {
                 if (ws && ws.readyState === WebSocket.OPEN) {
                     ws.send(float32ToPcm16(inputData).buffer);
                 }
-
-                if (isAgentSpeaking) {
-                    if (currentRms > BARGE_IN_RMS_THRESHOLD) {
-                        flushPlayback();
-                        if (ws && ws.readyState === WebSocket.OPEN) {
-                            ws.send(JSON.stringify({ type: 'barge_in' }));
-                        }
-                    }
-                }
             };
 
             source.connect(processor);
@@ -360,6 +357,9 @@ async function startSession() {
                         playbackMuted = false;
                         setStatus('Agent speaking…', 'active');
                     } else if (m.status === 'listening') {
+                        if (isAgentSpeaking) {
+                            flushPlayback();
+                        }
                         isAgentSpeaking = false;
                         setStatus('Listening…', 'active');
                     } else if (m.status === 'processing') {
